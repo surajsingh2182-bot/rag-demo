@@ -1,50 +1,47 @@
 import os
+import numpy as np
 import streamlit as st
 from sentence_transformers import SentenceTransformer
-import chromadb
+import faiss
 from groq import Groq
 from pathlib import Path
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="RAG Demo", page_icon="🔍", layout="centered")
 st.title("🔍 RAG Demo")
-st.caption("Ask questions about the docs. Powered by Groq + ChromaDB + sentence-transformers.")
+st.caption("Ask questions about the docs. Powered by Groq + FAISS + sentence-transformers.")
 
-# ── Load models & index docs (cached — runs once) ────────────────────────────
+# ── Load embedding model (cached) ─────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading embedding model...")
 def load_embedder():
     return SentenceTransformer("all-MiniLM-L6-v2")
 
+# ── Index all .txt files in docs/ (cached) ────────────────────────────────────
 @st.cache_resource(show_spinner="Indexing documents...")
 def build_index(_embedder):
-    client = chromadb.Client()  # in-memory for cloud deployment
-    collection = client.get_or_create_collection("docs")
-
     docs_path = Path("docs")
-    documents, ids = [], []
+    documents = []
 
-    for i, file in enumerate(sorted(docs_path.glob("*.txt"))):
+    for file in sorted(docs_path.glob("*.txt")):
         text = file.read_text(encoding="utf-8").strip()
-        # Simple fixed-size chunking with overlap
-        chunk_size, overlap = 500, 50
         words = text.split()
-        chunks = []
+        chunk_size, overlap = 500, 50
         for start in range(0, len(words), chunk_size - overlap):
             chunk = " ".join(words[start:start + chunk_size])
             if chunk:
-                chunks.append(chunk)
-        for j, chunk in enumerate(chunks):
-            documents.append(chunk)
-            ids.append(f"{file.stem}_chunk_{j}")
+                documents.append(chunk)
 
-    if documents:
-        embeddings = _embedder.encode(documents).tolist()
-        collection.add(documents=documents, embeddings=embeddings, ids=ids)
+    embeddings = _embedder.encode(documents, show_progress_bar=False)
+    embeddings = np.array(embeddings, dtype="float32")
 
-    return collection
+    # Normalize for cosine similarity
+    faiss.normalize_L2(embeddings)
 
-embedder = load_embedder()
-collection = build_index(embedder)
+    # Build FAISS index
+    index = faiss.IndexFlatIP(embeddings.shape[1])  # Inner product = cosine after normalize
+    index.add(embeddings)
+
+    return index, documents
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -55,6 +52,8 @@ def get_groq_client():
         st.stop()
     return Groq(api_key=api_key)
 
+embedder = load_embedder()
+index, documents = build_index(embedder)
 groq_client = get_groq_client()
 
 # ── Chat history ──────────────────────────────────────────────────────────────
@@ -65,33 +64,37 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ── Query function ────────────────────────────────────────────────────────────
+# ── RAG query function ────────────────────────────────────────────────────────
 def ask_rag(question: str) -> str:
-    # 1. Embed question
-    q_embedding = embedder.encode(question).tolist()
+    # Embed and normalize query
+    q_vec = embedder.encode([question], show_progress_bar=False)
+    q_vec = np.array(q_vec, dtype="float32")
+    faiss.normalize_L2(q_vec)
 
-    # 2. Retrieve top-k chunks
-    results = collection.query(query_embeddings=[q_embedding], n_results=4)
-    chunks = results["documents"][0]
+    # Retrieve top-4 chunks
+    _, indices = index.search(q_vec, k=4)
+    chunks = [documents[i] for i in indices[0] if i < len(documents)]
 
     if not chunks:
         return "I couldn't find relevant information in the docs."
 
     context = "\n\n---\n\n".join(chunks)
 
-    # 3. Augment prompt and call LLM
-    system_prompt = (
-        "You are a helpful assistant. Answer the user's question using ONLY "
-        "the provided context. If the answer isn't in the context, say so clearly. "
-        "Be concise and direct."
-    )
-    user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
-
+    # Call Groq LLM
     response = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",  # free, fast
+        model="llama-3.1-8b-instant",
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful assistant. Answer using ONLY the provided context. "
+                    "If the answer isn't in the context, say so clearly. Be concise."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Context:\n{context}\n\nQuestion: {question}",
+            },
         ],
         max_tokens=512,
     )
