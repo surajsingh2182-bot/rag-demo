@@ -1,0 +1,15 @@
+RAG stands for Retrieval-Augmented Generation. It is a technique that combines information retrieval with large language model generation. Instead of relying solely on the LLM's training data, RAG fetches relevant documents at query time and injects them into the prompt as context.
+
+The RAG pipeline has two phases. The first is indexing: documents are split into chunks, each chunk is converted into a vector embedding using an embedding model, and those vectors are stored in a vector database. The second phase is querying: the user's question is also embedded, a similarity search finds the most relevant chunks, and those chunks are passed to the LLM alongside the question.
+
+ChromaDB is an open-source vector database that runs locally with no server setup required. It stores vector embeddings and performs fast similarity searches. It is ideal for prototyping and small-scale RAG projects.
+
+Groq is an AI inference platform that provides a free API tier for running open-source models like Llama 3.1 and Mixtral. It is extremely fast due to custom LPU hardware. The free tier allows up to 6,000 requests per day, making it suitable for demos and side projects.
+
+Sentence Transformers is a Python library that provides pre-trained embedding models. The model all-MiniLM-L6-v2 is a popular choice for RAG because it is small (80MB), fast on CPU, and produces high-quality 384-dimensional embeddings.
+
+Streamlit is a Python framework for building web apps with minimal code. It is designed for data and AI applications. Streamlit Community Cloud offers free hosting for Streamlit apps deployed from public GitHub repositories.
+
+Chunking is the process of splitting documents into smaller pieces before embedding. Good chunk size balances context (larger is better) against noise (smaller is cleaner). A common starting point is 500 tokens with 50-token overlap between chunks to avoid cutting context at boundaries.
+
+Vector similarity search finds the most semantically similar chunks to a query using cosine similarity or dot product distance between embedding vectors. The top-k results (typically 3 to 5 chunks) are returned and used as context for the LLM.
