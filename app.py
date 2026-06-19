@@ -5,6 +5,7 @@ from sentence_transformers import SentenceTransformer
 import faiss
 from groq import Groq
 from pathlib import Path
+from pypdf import PdfReader
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="RAG Demo", page_icon="🔍", layout="centered")
@@ -16,20 +17,30 @@ st.caption("Ask questions about the docs. Powered by Groq + FAISS + sentence-tra
 def load_embedder():
     return SentenceTransformer("all-MiniLM-L6-v2")
 
-# ── Index all .txt files in docs/ (cached) ────────────────────────────────────
+# ── Helper: split text into overlapping chunks ────────────────────────────────
+def _chunk_text(text: str, documents: list, chunk_size=500, overlap=50):
+    words = text.split()
+    for start in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[start:start + chunk_size])
+        if chunk:
+            documents.append(chunk)
+
+# ── Index all .txt and .pdf files in docs/ (cached) ───────────────────────────
 @st.cache_resource(show_spinner="Indexing documents...")
 def build_index(_embedder):
     docs_path = Path("docs")
     documents = []
 
+    # Load .txt files
     for file in sorted(docs_path.glob("*.txt")):
         text = file.read_text(encoding="utf-8").strip()
-        words = text.split()
-        chunk_size, overlap = 500, 50
-        for start in range(0, len(words), chunk_size - overlap):
-            chunk = " ".join(words[start:start + chunk_size])
-            if chunk:
-                documents.append(chunk)
+        _chunk_text(text, documents)
+
+    # Load .pdf files
+    for file in sorted(docs_path.glob("*.pdf")):
+        reader = PdfReader(str(file))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        _chunk_text(text, documents)
 
     embeddings = _embedder.encode(documents, show_progress_bar=False)
     embeddings = np.array(embeddings, dtype="float32")
